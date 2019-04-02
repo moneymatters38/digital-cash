@@ -1,8 +1,8 @@
-FROM python:3.7.0
+FROM python:3.6.3
 ADD requirements.txt ./
 RUN pip install -r requirements.txt
 ADD utils.py ./
 ADD identities.py ./
-ADD mypowcoin.py ./
+ADD mypowp2pcoin.py ./
 
-CMD ["python", "-u", "mypowcoin.py", "serve"]
+CMD ["python", "-u", "mypowp2pcoin.py", "serve"]

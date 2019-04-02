@@ -1,0 +1,23 @@
+version: "3"
+
+services:
+
+  node3:
+    build: .
+    image: server
+    environment:
+      PEERS: 'node1,node2,node4'
+      ID: 3
+
+  node4:
+    image: server
+    environment:
+      PEERS: 'node0,node2,node5'
+      ID: 4
+
+  node5:
+    image: server
+    environment:
+      PEERS: 'node0,node1,node3'
+      ID: 5
+

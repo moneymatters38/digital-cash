@@ -37,8 +37,8 @@ def airdrop_tx():
         id=id, 
         tx_ins=[], 
         tx_outs=[
-            TxOut(tx_id=id, index=0, amount=500_000, public_key=bob_public_key), 
-            TxOut(tx_id=id, index=1, amount=500_000, public_key=alice_public_key),
+            TxOut(tx_id=id, index=0, amount=500000, public_key=bob_public_key), 
+            TxOut(tx_id=id, index=1, amount=500000, public_key=alice_public_key),
         ],
     )
     return tx
