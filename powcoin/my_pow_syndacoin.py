@@ -1,11 +1,11 @@
 """
-POW Syndacoin
+BlockCoin
 
 Usage:
-  pow_syndacoin.py.py serve
-  pow_syndacoin.py.py ping [--node <node>]
-  pow_syndacoin.py.py tx <from> <to> <amount> [--node <node>]
-  pow_syndacoin.py.py balance <name> [--node <node>]
+  blockcoin.py serve
+  blockcoin.py ping [--node <node>]
+  blockcoin.py tx <from> <to> <amount> [--node <node>]
+  blockcoin.py balance <name> [--node <node>]
 
 Options:
   -h --help      Show this screen.
@@ -25,9 +25,9 @@ from identities import user_private_key, user_public_key
 PORT = 10000
 node = None
 
-logging.basicConfig(level="INFO", format='%(threadName)-6s | %(message)s')
+logging.basicConfig(level="INFO",format='%(threadName)-6s | %(message)s',
+)
 logger = logging.getLogger(__name__)
-
 
 def spend_message(tx, index):
     outpoint = tx.tx_ins[index].outpoint
@@ -76,9 +76,9 @@ class TxOut:
 class Block:
 
     def __init__(self, txns, prev_id, nonce):
+        self.nonce = nonce
         self.txns = txns
         self.prev_id = prev_id
-        self.nonce = nonce
 
     @property
     def header(self):
@@ -93,7 +93,7 @@ class Block:
         return int(self.id, 16)
 
     def __repr__(self):
-        return f"Block(prev_id={self.prev_id[:10]}... id={self.id[:10]}...)"
+        return "Block(prev_id={0}..., id={1}...)".format(self.prev_id[:10], self.id[:10])
 
 class Node:
 
@@ -108,7 +108,7 @@ class Node:
         return [tx_in.outpoint for tx in self.mempool for tx_in in tx.tx_ins]
 
     def fetch_utxos(self, public_key):
-        return [tx_out for tx_out in self.utxo_set.values() 
+        return [tx_out for tx_out in self.utxo_set.values()
                 if tx_out.public_key == public_key]
 
     def update_utxo_set(self, tx):
@@ -162,7 +162,7 @@ class Node:
         assert block.prev_id == self.blocks[-1].id
 
     def handle_block(self, block):
-        # Check work, chain ordering
+        #  check work, chain ordering
         self.validate_block(block)
 
         # Check the transactions are valid
@@ -172,15 +172,16 @@ class Node:
         # If they're all good, update self.blocks and self.utxo_set
         for tx in block.txns:
             self.update_utxo_set(tx)
-        
+
         # Add the block to our chain
         self.blocks.append(block)
 
-        logger.info(f"Block accepted: height={len(self.blocks) - 1}")
+        logger.info("Block accepted: height={0}".format(len(self.blocks) - 1))
 
-        # Block propogation
+        # Block propagation
         for peer_address in self.peer_addresses:
             send_message(peer_address, "block", block)
+
 
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     sender_public_key = sender_private_key.get_verifying_key()
@@ -201,7 +202,7 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     tx_id = uuid.uuid4()
     change = tx_in_sum - amount
     tx_outs = [
-        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key), 
+        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key),
         TxOut(tx_id=tx_id, index=1, amount=change, public_key=sender_public_key),
     ]
 
@@ -209,6 +210,8 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     tx = Tx(id=tx_id, tx_ins=tx_ins, tx_outs=tx_outs)
     for i in range(len(tx.tx_ins)):
         tx.sign_input(i, sender_private_key)
+
+    return tx
 
 ##########
 # Mining #
@@ -218,26 +221,24 @@ DIFFICULTY_BITS = 20
 POW_TARGET = 2 ** (256 - DIFFICULTY_BITS)
 mining_interrupt = threading.Event()
 
-
 def mine_block(block):
     while block.proof >= POW_TARGET:
-        # TODO: accept interrupts here if tip changes
+        # accept interrupts here if tip changes
         if mining_interrupt.is_set():
             logger.info("Mining interrupted")
             mining_interrupt.clear()
-            return
-        block.nonce += 1
+            return None
+        block.nonce += 1  # new guess
     return block
 
-
 def mine_forever():
-    logging.info("Starting miner")
+    logger.info("Starting miner")
     while True:
         unmined_block = Block(
             txns=node.mempool,
             prev_id=node.blocks[-1].id,
-            nonce=random.randint(0, 1000000000),
-        )
+            nonce=random.randint(0,1000000000)
+            )
         mined_block = mine_block(unmined_block)
 
         if mined_block:
@@ -250,8 +251,8 @@ def mine_genesis_block():
     unmined_block = Block(txns=[], prev_id=None, nonce=0)
     mined_block = mine_block(unmined_block)
     node.blocks.append(mined_block)
-    # TODO: update utxo set, award coinbase, etc
 
+    # TODO: update utxo set, award coinbase etc
 
 ##############
 # Networking #
@@ -275,7 +276,7 @@ class TCPHandler(socketserver.BaseRequestHandler):
         command = message["command"]
         data = message["data"]
 
-        logger.info(f"received {command}")
+        logger.info("received {0}".format(command))
 
         if command == "ping":
             self.respond(command="pong", data="")
@@ -283,7 +284,7 @@ class TCPHandler(socketserver.BaseRequestHandler):
         if command == "block":
             if data.prev_id == node.blocks[-1].id:
                 node.handle_block(data)
-                # Interrupt mining thread
+                # interrupt mining thread
                 mining_interrupt.set()
 
         if command == "tx":
@@ -324,8 +325,8 @@ def main(args):
     if args["serve"]:
         global node
         node = Node()
-        
-        # TODO: mine genesis block
+
+        # mine genesis block
         mine_genesis_block()
 
         # Start server thread
@@ -337,7 +338,7 @@ def main(args):
         miner_thread.start()
 
     elif args["ping"]:
-        address = external_address(args["--node"])
+        address = address_from_host(args["--node"])
         send_message(address, "ping", "")
     elif args["balance"]:
         public_key = user_public_key(args["<name>"])
