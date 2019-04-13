@@ -99,7 +99,7 @@ class Block:
         return int(self.id, 16)
 
     def __eq__(self, other):
-        return self.id = other.id
+        return self.id == other.id
 
     def __repr__(self):
         return f"Block(prev_id={self.prev_id[:10]}... id={self.id[:10]}...)"
@@ -211,6 +211,12 @@ class Node:
         return None, None, None
 
     def handle_block(self, block):
+        # Ignore if we've already seen it
+        found_in_chain = block in self.blocks
+        found_in_branch = self.find_in_branch(block.id)[0] is not None
+        if found_in_branch or found_in_chain:
+            raise Exception("Recieved duplicate block")
+
         # look up previous block
         branch, branch_index, height = self.find_in_branch(block.prev_id)
 
