@@ -20,11 +20,10 @@ from ecdsa import SigningKey, SECP256k1
 
 PORT = 10000
 GET_BLOCKS_CHUNK = 10
-DIFFICULTY_BITS = 15
-POW_TARGET = 2 ** (256 - DIFFICULTY_BITS)
-#HALVENING_INTERVAL = 60 * 24 # daily (assuming 1 minute blocks)
-HALVENING_INTERVAL = 1 # daily (assuming 1 minute blocks)
-SATOSHIS_PER_COIN = 100_000_000
+INITIAL_DIFFICULTY_BITS = 15
+HALVENING_INTERVAL = 60 * 24 # daily (assuming 1 minute blocks)
+#HALVENING_INTERVAL = 1 # daily (assuming 1 minute blocks)
+SATOSHIS_PER_COIN = 100000000
 
 node = None
 lock = threading.Lock()
@@ -39,7 +38,7 @@ def spend_message(tx, index):
     return serialize(outpoint) + serialize(tx.tx_outs)
 
 def total_work(blocks):
-    return len(blocks)
+    return sum([2**block.bits for block in blocks])
 
 def tx_in_to_tx_out(tx_in, blocks):
     for block in blocks:
@@ -96,10 +95,11 @@ class TxOut:
 
 class Block:
 
-    def __init__(self, txns, prev_id, nonce):
+    def __init__(self, txns, prev_id, nonce, bits):
         self.txns = txns
         self.prev_id = prev_id
         self.nonce = nonce
+        self.bits = bits
 
     @property
     def header(self):
@@ -113,12 +113,16 @@ class Block:
     def proof(self):
         return int(self.id, 16)
 
+    @property
+    def target(self):
+        return 2 ** (256 - self.bits)
+
     def __eq__(self, other):
         return self.id == other.id
 
     def __repr__(self):
         prev_id = self.prev_id[:10] if self.prev_id else None
-        return f"Block(prev_id={prev_id}... id={self.id[:10]}...)"
+        return "Block(prev_id={0}... id={1}...)".format(prev_id,self.id[:10])
 
 class Node:
 
@@ -133,12 +137,12 @@ class Node:
 
     def connect(self, peer):
         if peer not in self.peers and peer != self.address:
-            logger.info(f'(handshake) Sent "connect" to {peer[0]}')
+            logger.info('(handshake) Sent "connect" to {0}'.format(peer[0]))
             try:
                 send_message(peer, "connect", None)
                 self.pending_peers.append(peer)
             except:
-                logger.info(f'(handshake) Node {peer[0]} offline')
+                logger.info('(handshake) Node {0} offline'.format(peer[0]))
 
     def sync(self):
         blocks = self.blocks[-GET_BLOCKS_CHUNK:]
@@ -178,7 +182,7 @@ class Node:
         # Put it back in mempool
         if tx not in self.mempool and not tx.is_coinbase:
             self.mempool.append(tx)
-            logging.info(f"Added tx to mempool")
+            logging.info("Added tx to mempool")
 
     def fetch_balance(self, public_key):
         # Fetch utxos associated with this public key
@@ -209,11 +213,13 @@ class Node:
             out_sum += tx_out.amount
 
         # Check no value created or destroyed
-        assert in_sum == out_sum
+        assert in_sum >= out_sum
 
-    def validate_coinbase(self, tx):
+    def validate_coinbase(self, block):
+        tx = block.txns[0]
         assert len(tx.tx_ins) == len(tx.tx_outs) == 1
-        assert tx.tx_outs[0].amount == self.get_block_subsidy()
+        fees = self.calculate_fees(block.txns[1:])
+        assert tx.tx_outs[0].amount == self.get_block_subsidy() + fees
 
     def handle_tx(self, tx):
         if tx not in self.mempool:
@@ -225,12 +231,14 @@ class Node:
                 send_message(peer, "tx", tx)
 
     def validate_block(self, block, validate_txns=False):
-        assert block.proof < POW_TARGET, "Insufficient Proof-of-Work"
+        assert block.proof < block.target, "Insufficient Proof-of-Work"
 
         if validate_txns:
+            # Check difficulty adjustment
+            assert block.bits == self.get_next_bits(block.prev_id)
 
             # Validate coinbase separately
-            self.validate_coinbase(block.txns[0])
+            self.validate_coinbase(block)
 
             # Check the transactions are valid
             for tx in block.txns[1:]:
@@ -266,13 +274,13 @@ class Node:
         # Handle each condition separately
         if extends_chain:
             self.connect_block(block)
-            logger.info(f"Extended chain to height {len(self.blocks)-1}")
+            logger.info("Extended chain to height {0}".format(len(self.blocks)-1))
         elif forks_chain:
             self.branches.append([block])
-            logger.info(f"Created branch {len(self.branches)}")
+            logger.info("Created branch {0}".format(len(self.branches)))
         elif extends_branch:
             branch.append(block)
-            logger.info(f"Extended branch {branch_index} to {len(branch)}")
+            logger.info("Extended branch {0} to {1}".format(branch_index, len(branch)))
 
             # Reorg if branch now has more work than main chain
 
@@ -280,11 +288,11 @@ class Node:
             fork_height = chain_ids.index(branch[0].prev_id)
             chain_since_fork = self.blocks[fork_height+1:]
             if total_work(branch) > total_work(chain_since_fork):
-                logger.info(f"Reorging to branch {branch_index}")
+                logger.info("Reorging to branch {0}".format(branch_index))
                 self.reorg(branch, branch_index)
         elif forks_branch:
             self.branches.append(branch[:height+1] + [block])
-            logger.info(f"Created branch {len(self.branches)-1} to height {len(self.branches[-1]) - 1}")
+            logger.info("Created branch {0} to height {1}".format(len(self.branches)-1,len(self.branches[-1]) - 1))
         else:
             self.sync()
             raise Exception("Encountered block with unknown parent. Syncing.")
@@ -312,7 +320,7 @@ class Node:
                 self.connect_block(block)
             except:
                 self.reorg(disconnected_blocks, branch_index)
-                logger.info(f"Reorg failed")
+                logger.info("Reorg failed")
                 return
 
     def connect_block(self, block):
@@ -327,7 +335,34 @@ class Node:
         halvenings = len(self.blocks) // HALVENING_INTERVAL
         return (50 * SATOSHIS_PER_COIN) // (2 ** halvenings)
 
-def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
+    def calculate_fees(self, txns):
+        fees = 0
+        for txn in txns:
+            inputs = outputs = 0
+            for tx_in in txn.tx_ins:
+                inputs += self.utxo_set[tx_in.outpoint].amount
+            for tx_out in txn.tx_outs:
+                outputs += tx_out.amount
+            fees += inputs - outputs
+        return fees
+
+    def get_next_bits(self, block_id):
+        # find the block
+
+        # will we enter a new difficulty period?
+
+        # only change bits if we're entering a new difficulty period
+
+        # calculate how long this difficulty period lasted
+
+        # todo: define block.timestamp
+
+        # calculate next bits
+
+        # log some information
+
+
+def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount, fee):
     sender_public_key = sender_private_key.get_verifying_key()
 
     # Construct tx.tx_outs
@@ -336,15 +371,15 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     for tx_out in utxos:
         tx_ins.append(TxIn(tx_id=tx_out.tx_id, index=tx_out.index, signature=None))
         tx_in_sum += tx_out.amount
-        if tx_in_sum > amount:
+        if tx_in_sum > amount + fee:
             break
 
     # Make sure sender can afford it
-    assert tx_in_sum >= amount
+    assert tx_in_sum >= amount + fee
 
     # Construct tx.tx_outs
     tx_id = uuid.uuid4()
-    change = tx_in_sum - amount
+    change = tx_in_sum - (amount + fee)
     tx_outs = [
         TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key),
         TxOut(tx_id=tx_id, index=1, amount=change, public_key=sender_public_key),
@@ -376,7 +411,7 @@ def prepare_coinbase(public_key, block_subsidy, tx_id=None):
 ##########
 
 def mine_block(block):
-    while block.proof >= POW_TARGET:
+    while block.proof >= block.target:
         # TODO: accept interrupts here if tip changes
         if mining_interrupt.is_set():
             logger.info("Mining interrupted")
@@ -390,11 +425,13 @@ def mine_forever(public_key):
     logging.info("Starting miner")
     while True:
         block_subsidy = node.get_block_subsidy()
-        coinbase = prepare_coinbase(public_key, block_subsidy)
+        fees = node.calculate_fees(node.mempool)
+        coinbase = prepare_coinbase(public_key, block_subsidy + fees)
         unmined_block = Block(
             txns=[coinbase] + node.mempool,
             prev_id=node.blocks[-1].id,
             nonce=random.randint(0, 1000000000),
+            bits=node.get_next_bits(node.blocks[-1].id)
         )
         mined_block = mine_block(unmined_block)
 
@@ -406,7 +443,7 @@ def mine_forever(public_key):
 
 def mine_genesis_block(node, public_key):
     coinbase = prepare_coinbase(public_key, node.get_block_subsidy(), tx_id="abc123")
-    unmined_block = Block(txns=[coinbase], prev_id=None, nonce=0)
+    unmined_block = Block(txns=[coinbase], prev_id=None, nonce=0, bits=INITIAL_DIFFICULTY_BITS)
     mined_block = mine_block(unmined_block)
     node.blocks.append(mined_block)
     node.connect_tx(coinbase)
@@ -476,13 +513,13 @@ class TCPHandler(socketserver.BaseRequestHandler):
         if command == "connect":
             if peer not in node.pending_peers and peer not in node.peers:
                 node.pending_peers.append(peer)
-                logger.info(f'(handshake) Accepted "connect" request from "{peer[0]}"')
+                logger.info('(handshake) Accepted "connect" request from "{0}"'.format(peer[0]))
                 send_message(peer, "connect-response", None)
         elif command == "connect-response":
             if peer in node.pending_peers and peer not in node.peers:
                 node.pending_peers.remove(peer)
                 node.peers.append(peer)
-                logger.info(f'(handshake) Connected to "{peer[0]}"')
+                logger.info('(handshake) Connected to "{0}"'.format(peer[0]))
                 send_message(peer, "connect-response", None)
 
                 # Request their peers
@@ -634,7 +671,7 @@ def main(args):
         utxos = response["data"]
 
         # Prepare transaction
-        tx = prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount)
+        tx = prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount, fee=100)
 
         # send to node
         send_message(address, "tx", tx)
