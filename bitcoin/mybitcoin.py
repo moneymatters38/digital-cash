@@ -20,9 +20,15 @@ from ecdsa import SigningKey, SECP256k1
 
 PORT = 10000
 GET_BLOCKS_CHUNK = 10
-BLOCK_SUBSIDY = 50
+DIFFICULTY_BITS = 15
+POW_TARGET = 2 ** (256 - DIFFICULTY_BITS)
+#HALVENING_INTERVAL = 60 * 24 # daily (assuming 1 minute blocks)
+HALVENING_INTERVAL = 1 # daily (assuming 1 minute blocks)
+SATOSHIS_PER_COIN = 100_000_000
+
 node = None
 lock = threading.Lock()
+mining_interrupt = threading.Event()
 
 logging.basicConfig(level="INFO", format='%(threadName)-6s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -141,7 +147,7 @@ class Node:
             send_message(peer, "sync", block_ids)
 
     def fetch_utxos(self, public_key):
-        return [tx_out for tx_out in self.utxo_set.values() 
+        return [tx_out for tx_out in self.utxo_set.values()
                 if tx_out.public_key == public_key]
 
     def connect_tx(self, tx):
@@ -207,7 +213,7 @@ class Node:
 
     def validate_coinbase(self, tx):
         assert len(tx.tx_ins) == len(tx.tx_outs) == 1
-        assert tx.tx_outs[0].amount == BLOCK_SUBSIDY
+        assert tx.tx_outs[0].amount == self.get_block_subsidy()
 
     def handle_tx(self, tx):
         if tx not in self.mempool:
@@ -250,7 +256,7 @@ class Node:
         # Conditions
         extends_chain = block.prev_id == self.blocks[-1].id
         forks_chain = not extends_chain and \
-                      block.prev_id in [block.id for block in self.blocks] 
+                      block.prev_id in [block.id for block in self.blocks]
         extends_branch = branch and height == len(branch) - 1
         forks_branch = branch and height != len(branch) - 1
 
@@ -317,6 +323,10 @@ class Node:
         for tx in block.txns:
             self.connect_tx(tx)
 
+    def get_block_subsidy(self):
+        halvenings = len(self.blocks) // HALVENING_INTERVAL
+        return (50 * SATOSHIS_PER_COIN) // (2 ** halvenings)
+
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     sender_public_key = sender_private_key.get_verifying_key()
 
@@ -336,7 +346,7 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     tx_id = uuid.uuid4()
     change = tx_in_sum - amount
     tx_outs = [
-        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key), 
+        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key),
         TxOut(tx_id=tx_id, index=1, amount=change, public_key=sender_public_key),
     ]
 
@@ -347,16 +357,16 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
 
     return tx
 
-def prepare_coinbase(public_key, tx_id=None):
+def prepare_coinbase(public_key, block_subsidy, tx_id=None):
     if tx_id is None:
         tx_id = uuid.uuid4()
     return Tx(
         id=tx_id,
         tx_ins=[
-            TxIn(None, None, None),    
+            TxIn(None, None, None),
         ],
         tx_outs=[
-            TxOut(tx_id=tx_id, index=0, amount=BLOCK_SUBSIDY,
+            TxOut(tx_id=tx_id, index=0, amount=block_subsidy,
                   public_key=public_key),
         ],
     )
@@ -364,11 +374,6 @@ def prepare_coinbase(public_key, tx_id=None):
 ##########
 # Mining #
 ##########
-
-DIFFICULTY_BITS = 15
-POW_TARGET = 2 ** (256 - DIFFICULTY_BITS)
-mining_interrupt = threading.Event()
-
 
 def mine_block(block):
     while block.proof >= POW_TARGET:
@@ -384,7 +389,8 @@ def mine_block(block):
 def mine_forever(public_key):
     logging.info("Starting miner")
     while True:
-        coinbase = prepare_coinbase(public_key)
+        block_subsidy = node.get_block_subsidy()
+        coinbase = prepare_coinbase(public_key, block_subsidy)
         unmined_block = Block(
             txns=[coinbase] + node.mempool,
             prev_id=node.blocks[-1].id,
@@ -394,12 +400,12 @@ def mine_forever(public_key):
 
         if mined_block:
             logger.info("")
-            logger.info("Mined a block")
+            logger.info("Mined a block w/ subsidy {0}".format(mined_block.txns[0].tx_outs[0].amount))
             with lock:
                 node.handle_block(mined_block)
 
 def mine_genesis_block(node, public_key):
-    coinbase = prepare_coinbase(public_key, tx_id="abc123")
+    coinbase = prepare_coinbase(public_key, node.get_block_subsidy(), tx_id="abc123")
     unmined_block = Block(txns=[coinbase], prev_id=None, nonce=0)
     mined_block = mine_block(unmined_block)
     node.blocks.append(mined_block)
@@ -481,7 +487,7 @@ class TCPHandler(socketserver.BaseRequestHandler):
 
                 # Request their peers
                 send_message(peer, "peers", None)
-            
+
         # else:
             # assert peer in node.peers, \
                 # f"Rejecting {command} from unconnected {peer[0]}"
@@ -602,7 +608,7 @@ def main(args):
 
         # Start miner thread
         miner_public_key = lookup_public_key(name)
-        miner_thread = threading.Thread(target=mine_forever, 
+        miner_thread = threading.Thread(target=mine_forever,
                 args=[miner_public_key], name="miner")
         miner_thread.start()
 
