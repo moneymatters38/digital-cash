@@ -19,11 +19,15 @@ from copy import deepcopy
 from ecdsa import SigningKey, SECP256k1
 
 PORT = 10000
-GET_BLOCKS_CHUNK = 10
-INITIAL_DIFFICULTY_BITS = 15
-HALVENING_INTERVAL = 60 * 24 # daily (assuming 1 minute blocks)
-#HALVENING_INTERVAL = 1 # daily (assuming 1 minute blocks)
+
 SATOSHIS_PER_COIN = 100000000
+GET_BLOCKS_CHUNK = 10
+HALVENING_INTERVAL = 60 * 24 # daily (assuming 1 minute blocks)
+
+INITIAL_DIFFICULTY_BITS = 17
+BLOCK_TIME_IN_SECS = 1
+BLOCKS_PER_DIFFICULTY_PERIOD = 5
+DIFFICULTY_PERIOD_IN_SECS = BLOCK_TIME_IN_SECS * BLOCKS_PER_DIFFICULTY_PERIOD
 
 node = None
 lock = threading.Lock()
@@ -95,11 +99,12 @@ class TxOut:
 
 class Block:
 
-    def __init__(self, txns, prev_id, nonce, bits):
+    def __init__(self, txns, prev_id, nonce, bits, timestamp):
         self.txns = txns
         self.prev_id = prev_id
         self.nonce = nonce
         self.bits = bits
+        self.timestamp = timestamp
 
     @property
     def header(self):
@@ -234,8 +239,15 @@ class Node:
         assert block.proof < block.target, "Insufficient Proof-of-Work"
 
         if validate_txns:
+            # check block timestamps cannot be too far in future
+            assert block.timestamp - time.time() < DIFFICULTY_PERIOD_IN_SECS, "Block too far in future"
+
+            # block timestamps must advance every block period
+            height = max(len(self.blocks) - BLOCKS_PER_DIFFICULTY_PERIOD, 0)
+            assert block.timestamp > self.blocks[height].timestamp, "Block periods cannot go backwards in time"
+
             # Check difficulty adjustment
-            assert block.bits == self.get_next_bits(block.prev_id)
+            assert block.bits == self.get_next_bits(block.prev_id, log=True)
 
             # Validate coinbase separately
             self.validate_coinbase(block)
@@ -346,20 +358,41 @@ class Node:
             fees += inputs - outputs
         return fees
 
-    def get_next_bits(self, block_id):
+    def get_next_bits(self, block_id, log=False):
         # find the block
+        height = [block.id for block in self.blocks].index(block_id)
+        block = self.blocks[height]
 
         # will we enter a new difficulty period?
+        next_height = height + 1
+        next_block_period = next_height // BLOCKS_PER_DIFFICULTY_PERIOD
+        next_block_period_height = next_height % BLOCKS_PER_DIFFICULTY_PERIOD
 
         # only change bits if we're entering a new difficulty period
+        if next_block_period_height != 0:
+            return block.bits
 
         # calculate how long this difficulty period lasted
-
-        # todo: define block.timestamp
+        one_period_ago_index = max(height - BLOCKS_PER_DIFFICULTY_PERIOD, 0)
+        one_period_ago_block = self.blocks[one_period_ago_index]
+        period_duration = block.timestamp - one_period_ago_block.timestamp
 
         # calculate next bits
+        if period_duration <= DIFFICULTY_PERIOD_IN_SECS:
+            next_bits = block.bits + 1
+        else:
+            next_bits = block.bits - 1
 
         # log some information
+        if log:
+            logger.info(
+                 "(difficulty adjustment) " +
+                 "period={0} ".format(next_block_period) +
+                 "target={0} ".format(DIFFICULTY_PERIOD_IN_SECS) +
+                 "duration={0} ".format(period_duration) +
+                 "bits={0}->{1} ".format(block.bits,next_bits)
+            )
+        return next_bits
 
 
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount, fee):
@@ -431,7 +464,8 @@ def mine_forever(public_key):
             txns=[coinbase] + node.mempool,
             prev_id=node.blocks[-1].id,
             nonce=random.randint(0, 1000000000),
-            bits=node.get_next_bits(node.blocks[-1].id)
+            bits=node.get_next_bits(node.blocks[-1].id),
+            timestamp=time.time()
         )
         mined_block = mine_block(unmined_block)
 
@@ -443,7 +477,7 @@ def mine_forever(public_key):
 
 def mine_genesis_block(node, public_key):
     coinbase = prepare_coinbase(public_key, node.get_block_subsidy(), tx_id="abc123")
-    unmined_block = Block(txns=[coinbase], prev_id=None, nonce=0, bits=INITIAL_DIFFICULTY_BITS)
+    unmined_block = Block(txns=[coinbase], prev_id=None, nonce=0, bits=INITIAL_DIFFICULTY_BITS, timestamp=1555247677.7126307)
     mined_block = mine_block(unmined_block)
     node.blocks.append(mined_block)
     node.connect_tx(coinbase)
