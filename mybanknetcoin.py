@@ -2,12 +2,12 @@
 BankNetCoin.
 
 Usage:
-  banknetcoin.py serve
-  banknetcoin.py ping
-  banknetcoin.py balance <name>
-  banknetcoin.py tx <from> <to> <amount>
-  banknetcoin.py -h | --help
-  banknetcoin.py --version
+  mybanknetcoin.py serve
+  mybanknetcoin.py ping
+  mybanknetcoin.py balance <name>
+  mybanknetcoin.py tx <from> <to> <amount>
+  mybanknetcoin.py -h | --help
+  mybanknetcoin.py --version
 
 Options:
   -h --help     Show this screen.
