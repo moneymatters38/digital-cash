@@ -2,10 +2,10 @@
 POW Syndacoin
 
 Usage:
-  pow_syndacoin.py.py serve
-  pow_syndacoin.py.py ping [--node <node>]
-  pow_syndacoin.py.py tx <from> <to> <amount> [--node <node>]
-  pow_syndacoin.py.py balance <name> [--node <node>]
+  mypowp2pcoin.py serve
+  mypowp2pcoin.py ping [--node <node>]
+  mypowp2pcoin.py tx <from> <to> <amount> [--node <node>]
+  mypowp2pcoin.py balance <name> [--node <node>]
 
 Options:
   -h --help      Show this screen.
